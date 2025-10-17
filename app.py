@@ -21,6 +21,19 @@ from langchain_community.embeddings import SentenceTransformerEmbeddings
 # DashScope官方SDK
 from dashscope import Generation
 
+# --- AI Persona Definition ---
+JA_ASSISTANT_PERSONA = "你是晶澳科技（JA SOLAR）钙钛矿研究部的人工智能助手，名为‘晶澳智能助手’。你的任务是为用户提供光伏行业相关的专业支持。在所有回答中请保持这个身份和专业的语气。"
+JA_ASSISTANT_INTRO = "您好！我是晶澳智能助手，专注于为钙钛矿光伏研究提供支持。如果您有任何关于钙钛矿技术、文献、实验数据分析等方面的问题，欢迎随时向我提问！"
+
+# New persona for general knowledge with strict anti-hallucination rules
+JA_ASSISTANT_GENERAL_KNOWLEDGE_PERSONA = """你是晶澳科技（JA SOLAR）钙钛矿研究部的人工智能助手，名为“晶澳智能助手”。
+你的任务是为用户提供光伏行业相关的专业支持。
+在回答问题时，你必须严格遵守以下规则：
+1. 你可以结合你的通用知识进行回答。
+2. **极其重要**: 在使用通用知识回答时，你必须明确说明这是一个行业内的普遍知识或公开信息，**绝对不能**将这些通用的技术、成果或数据归功于“晶澳科技”。不能捏造任何关于晶澳科技的信息。
+3. 只有当你的知识库（如果提供了上下文）中明确提到了“晶澳科技”的具体成果时，你才能提及公司。
+4. 保持专业、客观、严谨的语气。"""
+
 # --- 核心功能逻辑 ---
 
 @st.cache_resource
@@ -53,7 +66,7 @@ def summarize_with_ai(summary_text):
     """使用Qwen模型总结论文摘要。"""
     prompt = f"请用简洁的中文总结以下学术论文的摘要，提炼其核心观点、方法和结论，以便快速了解其价值。不要超过三句话。摘要如下：\n\n{summary_text}"
     messages = [
-        {"role": "system", "content": "You are a helpful assistant specialized in summarizing academic papers."},
+        {"role": "system", "content": f"{JA_ASSISTANT_PERSONA} 在这个具体的任务里，你的角色是一个专门总结学术论文的专家。"},
         {"role": "user", "content": prompt}
     ]
     return call_qwen_model(messages)
@@ -213,9 +226,9 @@ if st.session_state.page == "知识库问答":
             st.error("错误：请先设置 DASHSCOPE_API_KEY 环境变量。")
             st.code("export DASHSCOPE_API_KEY='您的key'", language="shell")
         else:
-            # 初始化会话状态
+            # 初始化会话状态和开场白
             if "messages" not in st.session_state:
-                st.session_state.messages = []
+                st.session_state.messages = [{"role": "assistant", "content": JA_ASSISTANT_INTRO}]
 
             # 创建一个容器来展示聊天记录
             chat_box = st.container(height=400)
@@ -255,12 +268,12 @@ if st.session_state.page == "知识库问答":
                         
                         if use_rag:
                             st.info("✅ AI判断信息相关，将基于知识库回答...")
-                            system_content = f"请仅根据以下上下文来回答问题，回答时可以对信息进行总结和组织，但不要超出上下文范围:\n{context_string}"
+                            system_content = f"{JA_ASSISTANT_PERSONA} 请严格根据以下上下文来回答问题，回答时可以对信息进行总结和组织，但不要超出上下文范围:\n{context_string}"
                             messages = [{"role": "system", "content": system_content}, {"role": "user", "content": prompt}]
                             response = call_qwen_model(messages)
                         else:
                             st.warning("⚠️ AI判断知识库中无直接相关信息，将使用通用知识回答...")
-                            messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
+                            messages = [{"role": "system", "content": JA_ASSISTANT_GENERAL_KNOWLEDGE_PERSONA}, {"role": "user", "content": prompt}]
                             response = call_qwen_model(messages)
                         
                         st.markdown(response)
