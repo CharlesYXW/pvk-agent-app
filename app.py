@@ -12,6 +12,7 @@ import itertools
 import os
 import arxiv
 import datetime
+import base64 # Added for base64 encoding of logo
 
 # LangChain相关的库（仅用于检索）
 from langchain_community.vectorstores import FAISS
@@ -48,32 +49,78 @@ def call_qwen_model(messages):
     except Exception as e:
         return f"调用大模型时发生异常: {e}"
 
+def summarize_with_ai(summary_text):
+    """使用Qwen模型总结论文摘要。"""
+    prompt = f"请用简洁的中文总结以下学术论文的摘要，提炼其核心观点、方法和结论，以便快速了解其价值。不要超过三句话。摘要如下：\n\n{summary_text}"
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant specialized in summarizing academic papers."},
+        {"role": "user", "content": prompt}
+    ]
+    return call_qwen_model(messages)
+
 @st.cache_data
-def get_latest_papers(keywords):
-    """根据关键词从arXiv检索最新的论文，返回结构化数据列表。"""
+def get_latest_papers(keywords, date_range="all_time", sort_by="Relevance"):
+    """根据关键词、日期范围和排序方式从arXiv检索论文。"""
     if not keywords or not any(keywords):
         return [], "请输入至少一个关键词。"
 
-    MAX_RESULTS_PER_KEYWORD = 3
+    # 1. 构建日期查询字符串
+    date_query_part = ""
+    if date_range != "all_time":
+        end_date = datetime.datetime.now(datetime.timezone.utc)
+        if date_range == "last_month":
+            start_date = end_date - datetime.timedelta(days=30)
+        elif date_range == "last_3_months":
+            start_date = end_date - datetime.timedelta(days=90)
+        elif date_range == "last_year":
+            start_date = end_date - datetime.timedelta(days=365)
+        
+        start_date_str = start_date.strftime("%Y%m%d%H%M")
+        end_date_str = end_date.strftime("%Y%m%d%H%M")
+        date_query_part = f" AND submittedDate:[{start_date_str} TO {end_date_str}]"
+
+    # 2. 检索论文
+    # 根据排序参数选择API的排序标准
+    api_sort_criterion = arxiv.SortCriterion.Relevance
+    if sort_by == "SubmittedDate":
+        api_sort_criterion = arxiv.SortCriterion.SubmittedDate
+
+    MAX_RESULTS_PER_KEYWORD = 10
     unique_papers = {}
-    for query in keywords:
+    for keyword in keywords:
         try:
-            search = arxiv.Search(query=query, max_results=MAX_RESULTS_PER_KEYWORD, sort_by=arxiv.SortCriterion.LastUpdatedDate)
+            full_query = f"({keyword}){date_query_part}"
+            search = arxiv.Search(
+                query=full_query, 
+                max_results=MAX_RESULTS_PER_KEYWORD, 
+                sort_by=api_sort_criterion # 使用选择的排序方式
+            )
             for result in search.results():
                 if result.entry_id not in unique_papers:
                     unique_papers[result.entry_id] = {
+                        "entry_id": result.entry_id,
                         "title": result.title,
                         "authors": ', '.join(author.name for author in result.authors),
                         "pdf_url": result.pdf_url,
-                        "summary": result.summary.replace('\n', ' ')
+                        "summary": result.summary.replace('\n', ' '),
+                        "published": result.published.strftime('%Y-%m-%d')
                     }
         except Exception as e:
             return [], f"检索时出错: {e}"
     
     if not unique_papers:
-        return [], "未找到与您关键词相关的新论文。"
+        return [], "在选定时间范围内，未找到与您关键词相关的新论文。"
         
-    return list(unique_papers.values()), None
+    # 3. 对最终结果列表进行排序
+    papers_list = list(unique_papers.values())
+    if sort_by == "SubmittedDate":
+        # 如果用户选择按最新发表排序，则对合并后的列表进行排序
+        sorted_papers = sorted(papers_list, key=lambda p: p['published'], reverse=True)
+    else:
+        # 如果按相关度，则直接使用混合后的列表（顺序部分取决于API和合并过程）
+        sorted_papers = papers_list
+    
+    return sorted_papers, None
 
 def analyze_xrd_from_upload(uploaded_file):
     # ... (此函数不变)
@@ -125,6 +172,17 @@ st.markdown(
        .block-container {
             padding-top: 1.5rem !important;
         }
+        /* Custom styling for the 'AI Summary' button using a more robust data-testid selector */
+        div[data-testid="stHorizontalBlock"] > div:nth-child(2) .stButton button {
+            background-color: #4A90E2 !important; /* A medium-dark blue */
+            border-color: #4A90E2 !important;
+            color: white !important; /* White text for readability */
+        }
+        div[data-testid="stHorizontalBlock"] > div:nth-child(2) .stButton button:hover {
+            background-color: #357ABD !important; /* A slightly darker blue for hover */
+            border-color: #357ABD !important;
+            color: white !important;
+        }
     </style>
     """,
     unsafe_allow_html=True)
@@ -132,8 +190,10 @@ st.title("🔬 钙钛矿研发智能助手")
 
 # --- 导航 ---
 with st.sidebar:
-    if os.path.exists("assets/logo.png"):
-        st.image("assets/logo.png", use_container_width=True)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(script_dir, "assets", "logo.png")
+    st.image(logo_path, use_container_width=True)
+
     st.markdown("<h1 style='text-align: center; font-size: 24px;'>功能导航</h1>", unsafe_allow_html=True)
     if 'page' not in st.session_state: st.session_state.page = "知识库问答"
     def set_page(page_name): st.session_state.page = page_name
@@ -211,32 +271,87 @@ elif st.session_state.page == "文献检索":
     st.header("📰 最新科研文献追踪")
     st.markdown("输入关键词，AI将自动从arXiv上检索最新的相关论文，并生成简报。")
 
+    # 初始化AI摘要的状态存储
+    if 'ai_summaries' not in st.session_state:
+        st.session_state.ai_summaries = {}
+    if 'search_results' not in st.session_state:
+        st.session_state.search_results = None
+
     with st.container(border=True):
-        keywords_input = st.text_input(
-            "请输入关键词（多个请用英文逗号,隔开）:", 
-            value="perovskite stability, CsPbI3",
-            help="例如: perovskite solar cell, ETL, device stability"
-        )
-        
+        # 使用列来布局输入框和选择器
+        col1, col2, col3 = st.columns([3, 1, 1])
+        with col1:
+            keywords_input = st.text_input(
+                "请输入关键词（多个请用英文逗号,隔开）:", 
+                value="perovskite stability, CsPbI3",
+                help="例如: perovskite solar cell, ETL, device stability"
+            )
+        with col2:
+            date_range = st.selectbox(
+                "时间范围",
+                ("all_time", "last_month", "last_3_months", "last_year"),
+                format_func=lambda x: {
+                    "all_time": "所有时间",
+                    "last_month": "最近一个月",
+                    "last_3_months": "最近三个月",
+                    "last_year": "最近一年"
+                }.get(x),
+            )
+        with col3:
+            sort_by = st.selectbox(
+                "排序方式",
+                ("Relevance", "SubmittedDate"),
+                index=1, # 默认选择“最新发表”
+                format_func=lambda x: {"Relevance": "相关度", "SubmittedDate": "最新发表"}.get(x)
+            )
+
         if st.button("开始检索", use_container_width=True):
+            # 清空之前的AI摘要和结果
+            st.session_state.ai_summaries = {}
+            st.session_state.search_results = None
+            st.session_state.search_error = None
             if keywords_input:
                 keywords_list = [keyword.strip() for keyword in keywords_input.split(',') if keyword.strip()]
-                with st.spinner(f"正在从arXiv检索: {', '.join(keywords_list)}..."):
-                    papers, error = get_latest_papers(keywords_list)
-                    if error:
-                        st.error(error)
-                    elif not papers:
-                        st.warning("未找到与您关键词相关的新论文。")
-                    else:
-                        st.success(f"检索完成！共找到 {len(papers)} 篇相关论文。")
-                        
-                        for i, paper in enumerate(papers):
-                            with st.expander(f"**{i+1}. {paper['title']}**", expanded=True):
-                                st.markdown(f"**作者:** {paper['authors']}")
-                                st.markdown(f"**摘要:** {paper['summary']}")
-                                st.link_button("阅读原文 (PDF)", paper['pdf_url'])
+                with st.spinner(f"正在从arXiv检索: {', '.join(keywords_list)}...\n请耐心等待，检索可能需要一些时间。"):
+                    papers, error = get_latest_papers(keywords_list, date_range, sort_by)
+                    # 将结果存储在session state中，以便在按钮点击后保留
+                    st.session_state.search_results = papers
+                    st.session_state.search_error = error
             else:
                 st.warning("请输入关键词。")
+
+    # 在主按钮逻辑外部渲染结果，以支持AI总结按钮的交互
+    if st.session_state.search_results:
+        papers = st.session_state.search_results
+        st.success(f"检索完成！共找到 {len(papers)} 篇相关论文。")
+        
+        for i, paper in enumerate(papers):
+            with st.expander(f"**{i+1}. {paper['title']}**", expanded=True):
+                st.markdown(f"**发表日期:** {paper['published']} | **作者:** {paper['authors']}")
+                st.markdown(f"**摘要:** {paper['summary']}")
+                
+                # 功能按钮 - 优化布局
+                col1, col2, col3 = st.columns(3, gap="small")
+                with col1:
+                    st.link_button("阅读原文", paper['pdf_url'], use_container_width=True)
+                with col2:
+                    if st.button("AI总结", key=f"summarize_{paper['entry_id']}", use_container_width=True):
+                        with st.spinner("AI正在阅读摘要，请稍候..."):
+                            ai_summary = summarize_with_ai(paper['summary'])
+                            st.session_state.ai_summaries[paper['entry_id']] = ai_summary
+                with col3:
+                    if st.button("深入研究", key=f"research_{paper['entry_id']}", use_container_width=True):
+                        st.toast("该功能正在开发中...")
+
+                # 如果存在AI总结，则显示它
+                if paper['entry_id'] in st.session_state.ai_summaries:
+                    st.info(f"{st.session_state.ai_summaries[paper['entry_id']]}")
+
+    elif st.session_state.get('search_error'):
+        st.error(st.session_state.search_error)
+    # 只有在按钮被点击后，search_results才会被定义，所以需要检查
+    elif st.session_state.get('search_results') is not None and not st.session_state.get('search_results'):
+        st.warning("在选定时间范围内，未找到与您关键词相关的新论文。")
 
 elif st.session_state.page == "XRD分析":
     st.header("📈 XRD数据自动分析")
