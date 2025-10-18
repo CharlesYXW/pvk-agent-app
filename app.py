@@ -36,7 +36,6 @@ JA_ASSISTANT_GENERAL_KNOWLEDGE_PERSONA = """你是晶澳科技（JA SOLAR）钙�
 
 # --- 核心功能逻辑 ---
 
-# @st.cache_resource
 def get_retriever():
     if not os.path.exists("faiss_index"): return None
     try:
@@ -248,13 +247,18 @@ if st.session_state.page == "知识库问答":
                 # 获取并显示助手的回复
                 with chat_box.chat_message("assistant"):
                     with st.spinner("正在思考..."):
-                        retriever = get_retriever()
+                        if 'retriever' not in st.session_state:
+                            with st.spinner("正在初始化知识库，请稍候..."):
+                                st.session_state.retriever = get_retriever()
+                        retriever = st.session_state.retriever
+
                         if not retriever:
-                            st.error("知识库索引未找到！请先运行 `build_knowledge_base.py` 来创建知识库。")
+                            st.error("知识库索引未找到或加载失败！请检查faiss_index目录或运行 `build_knowledge_base.py`。")
                             st.stop()
 
                         # RAG逻辑...
-                        relevant_docs = retriever.get_relevant_documents(prompt)
+                        with st.spinner("正在检索知识库并生成回答..."):
+                            relevant_docs = retriever.get_relevant_documents(prompt)
                         use_rag = False
                         if relevant_docs:
                             context_string = "\n\n".join(doc.page_content for doc in relevant_docs)
