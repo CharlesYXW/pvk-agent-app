@@ -36,7 +36,7 @@ JA_ASSISTANT_GENERAL_KNOWLEDGE_PERSONA = """你是晶澳科技（JA SOLAR）钙�
 
 # --- 核心功能逻辑 ---
 
-@st.cache_resource
+# @st.cache_resource
 def get_retriever():
     if not os.path.exists("faiss_index"): return None
     try:
