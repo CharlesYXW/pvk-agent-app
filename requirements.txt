@@ -1,13 +1,27 @@
-streamlit
-pandas
-numpy
-matplotlib
-scipy
-scikit-learn
-arxiv
-langchain-community
-faiss-cpu
-sentence-transformers
-dashscope
-python-dotenv
-lxml
+# Web Framework
+streamlit==1.49.1
+
+# Data & Scientific Computing
+pandas==2.3.2
+numpy==2.3.2
+matplotlib==3.10.6
+scipy==1.16.2
+scikit-learn==1.7.2
+
+# APIs & Services
+arxiv==2.2.0
+dashscope==1.24.2
+
+# LangChain Ecosystem - Pinning versions is critical for stability
+langchain==0.3.27
+langchain-core==0.3.76
+langchain-community==0.3.29
+pydantic==2.9.2
+
+# Vectorstore & Embeddings
+faiss-cpu==1.12.0
+sentence-transformers==5.1.1
+
+# Utilities
+python-dotenv==1.1.1
+lxml==6.0.1
