@@ -24,6 +24,9 @@ from dashscope import Generation
 # 系统状态检测模块
 import system_status
 
+# 文献订阅模块
+from literature_subscription import get_subscription_manager, format_notification
+
 # --- AI Persona Definition ---
 JA_ASSISTANT_PERSONA = "你是晶澳科技（JA SOLAR）钙钛矿研究部的人工智能助手，名为‘晶澳智能助手’。你的任务是为用户提供光伏行业相关的专业支持。在所有回答中请保持这个身份和专业的语气。"
 JA_ASSISTANT_INTRO = "您好！我是晶澳智能助手，专注于为钙钛矿光伏研究提供支持。如果您有任何关于钙钛矿技术、文献、实验数据分析等方面的问题，欢迎随时向我提问！"
@@ -73,9 +76,16 @@ def summarize_with_ai(summary_text):
     ]
     return call_qwen_model(messages)
 
+import time as time_module  # 导入 time 模块以支持重试机制
+
+# 定义重试参数
+ARXIV_RETRY_ATTEMPTS = 3
+ARXIV_RETRY_DELAY = 1  # 降低重试延迟到 1 秒
+ARXIV_KEYWORD_DELAY = 0.5  # 关键词之间的延迟（秒）
+
 @st.cache_data
 def get_latest_papers(keywords, date_range="all_time", sort_by="Relevance"):
-    """根据关键词、日期范围和排序方式从arXiv检索论文。"""
+    """根据关键词、日期范围和排序方式从arXiv检索论文，包含重试机制。"""
     if not keywords or not any(keywords):
         return [], "请输入至少一个关键词。"
 
@@ -102,26 +112,51 @@ def get_latest_papers(keywords, date_range="all_time", sort_by="Relevance"):
 
     MAX_RESULTS_PER_KEYWORD = 10
     unique_papers = {}
-    for keyword in keywords:
-        try:
-            full_query = f"({keyword}){date_query_part}"
-            search = arxiv.Search(
-                query=full_query, 
-                max_results=MAX_RESULTS_PER_KEYWORD, 
-                sort_by=api_sort_criterion # 使用选择的排序方式
-            )
-            for result in search.results():
-                if result.entry_id not in unique_papers:
-                    unique_papers[result.entry_id] = {
-                        "entry_id": result.entry_id,
-                        "title": result.title,
-                        "authors": ', '.join(author.name for author in result.authors),
-                        "pdf_url": result.pdf_url,
-                        "summary": result.summary.replace('\n', ' '),
-                        "published": result.published.strftime('%Y-%m-%d')
-                    }
-        except Exception as e:
-            return [], f"检索时出错: {e}"
+    for keyword_idx, keyword in enumerate(keywords):
+        # 为每个关键词添加重试机制
+        for attempt in range(ARXIV_RETRY_ATTEMPTS):
+            try:
+                full_query = f"({keyword}){date_query_part}"
+                search = arxiv.Search(
+                    query=full_query, 
+                    max_results=MAX_RESULTS_PER_KEYWORD, 
+                    sort_by=api_sort_criterion # 使用选择的排序方式
+                )
+                
+                # 尝试获取结果
+                for result in search.results():
+                    if result.entry_id not in unique_papers:
+                        # 确保 pdf_url 是有效的字符串
+                        pdf_url = str(result.pdf_url) if result.pdf_url else ""
+                        if not pdf_url.startswith('http'):
+                            # 如果不是有效的 URL，使用 arXiv 网页链接
+                            pdf_url = f"https://arxiv.org/abs/{result.entry_id.split('/abs/')[-1]}"
+                        
+                        unique_papers[result.entry_id] = {
+                            "entry_id": result.entry_id,
+                            "title": result.title,
+                            "authors": ', '.join(author.name for author in result.authors),
+                            "pdf_url": pdf_url,
+                            "summary": result.summary.replace('\n', ' '),
+                            "published": result.published.strftime('%Y-%m-%d')
+                        }
+                
+                # 成功检索，跳出重试循环
+                break
+                
+            except Exception as e:
+                error_msg = str(e)
+                if attempt < ARXIV_RETRY_ATTEMPTS - 1:
+                    print(f"关键词 '{keyword}' 检索失败（尝试 {attempt + 1}/{ARXIV_RETRY_ATTEMPTS}）: {error_msg}")
+                    print(f"等待 {ARXIV_RETRY_DELAY} 秒后重试...")
+                    time_module.sleep(ARXIV_RETRY_DELAY)
+                else:
+                    print(f"关键词 '{keyword}' 检索失败，已达最大重试次数")
+                    return [], f"检索时出错（已重试 {ARXIV_RETRY_ATTEMPTS} 次）: {error_msg}。\n\n故障排查建议:\n1. 检查网络连接\n2. 尝试稍后重试\n3. arXiv 服务器可能暂时不可用"
+        
+        # 在关键词之间添加小延迟，避免频繁请求
+        if keyword_idx < len(keywords) - 1:
+            time_module.sleep(ARXIV_KEYWORD_DELAY)
     
     if not unique_papers:
         return [], "在选定时间范围内，未找到与您关键词相关的新论文。"
@@ -138,7 +173,7 @@ def get_latest_papers(keywords, date_range="all_time", sort_by="Relevance"):
     return sorted_papers, None
 
 def analyze_xrd_from_upload(uploaded_file):
-    # ... (此函数不变)
+    """XRD 数据分析函数"""
     if uploaded_file is None: return None
     try:
         data = np.loadtxt(uploaded_file, comments="#", delimiter=",")
@@ -220,6 +255,41 @@ st.markdown(
             background-color: #1e40af !important;
             border-color: #1e40af !important;
         }
+        
+        /* 微信风格的通知徽章 */
+        .notification-badge {
+            display: inline-block;
+            background-color: #f5222d;
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 6px;
+            min-width: 18px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(245, 34, 45, 0.3);
+        }
+        
+        /* 未读提醒按钮样式 */
+        .unread-alert-button {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(238, 90, 111, 0.3);
+            width: 100%;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        .unread-alert-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(238, 90, 111, 0.4);
+        }
     </style>
     """,
     unsafe_allow_html=True)
@@ -280,6 +350,22 @@ with st.sidebar:
     if 'page' not in st.session_state: 
         st.session_state.page = "知识库问答"
     
+    # 从 URL 查询参数处理导航（仅在首次加载且有参数时）
+    if 'url_params_processed' not in st.session_state:
+        query_params = st.query_params
+        # 只有当 URL 中明确包含 page 参数时才覆盖默认页面
+        if "page" in query_params and query_params.get("page"):
+            st.session_state.page = query_params.get("page")
+        if "active_subscription_tab" in query_params:
+            try:
+                st.session_state.active_subscription_tab = int(query_params.get("active_subscription_tab"))
+            except (ValueError, TypeError):
+                pass  # 保留现有值或默认值
+        st.session_state.url_params_processed = True
+        # 清除 URL 参数，避免刷新时重复处理
+        if "page" in query_params or "active_subscription_tab" in query_params:
+            st.query_params.clear()
+    
     def set_page(page_name): 
         st.session_state.page = page_name
     
@@ -287,10 +373,51 @@ with st.sidebar:
     pages = [
         {"icon": "💬", "name": "知识库问答", "desc": "基于内部文档的智能问答"},
         {"icon": "📰", "name": "文献检索", "desc": "追踪最新科研动态"},
-        {"icon": "📈", "name": "XRD分析", "desc": "自动分析衍射图谱"},
+        {"icon": "🔔", "name": "文献订阅", "desc": "定时推送研究领域更新"},
+        {"icon": "📈", "name": "XRD分析", "desc": "自动分析衭射图谱"},
         {"icon": "💡", "name": "性能预测", "desc": "AI预测材料性能"},
         {"icon": "🚀", "name": "实验优化", "desc": "寻找最佳参数组合"},
     ]
+    
+    # 获取未读更新数量（用于通知徽章）
+    try:
+        sub_manager = get_subscription_manager()
+        unread_count = sub_manager.get_unread_updates_count()
+    except:
+        unread_count = 0
+    
+    # 如果有未读更新，显示可点击的提醒横幅
+    if unread_count > 0:
+        from urllib.parse import quote
+        page_name_encoded = quote("文献订阅")
+        
+        st.markdown(
+            f'''
+            <a href="?page={page_name_encoded}&active_subscription_tab=2" target="_self" style="text-decoration: none;">
+                <div style="
+                    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+                    color: white;
+                    padding: 24px 20px;
+                    border-radius: 12px;
+                    text-align: center;
+                    font-weight: 600;
+                    box-shadow: 0 4px 12px rgba(238, 90, 111, 0.4);
+                    margin-bottom: 15px;
+                    margin-top: 0;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                "
+                onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(238, 90, 111, 0.5)'"
+                onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(238, 90, 111, 0.4)'">
+                    <div style="font-size: 16px; margin-bottom: 8px;">🔔 有新的文献更新</div>
+                    <div style="font-size: 26px; font-weight: bold; margin: 12px 0;">{unread_count} 篇未读</div>
+                    <div style="font-size: 13px; opacity: 0.95;">点击查看详情 →</div>
+                </div>
+            </a>
+            ''',
+            unsafe_allow_html=True
+        )
+        st.markdown("---")
     
     # 渲染导航按钮
     for page_info in pages:
@@ -300,8 +427,11 @@ with st.sidebar:
         # 创建按钮容器
         btn_container = st.container()
         with btn_container:
+            # 使用简洁的按钮标签，不显示徽章
+            button_label = f"{page_info['icon']} {page_info['name']}"
+            
             if st.button(
-                f"{page_info['icon']} {page_info['name']}",
+                button_label,
                 on_click=set_page,
                 args=(page_info["name"],),
                 use_container_width=True,
@@ -589,7 +719,11 @@ elif st.session_state.page == "文献检索":
                 # 功能按钮 - 优化布局
                 col1, col2, col3 = st.columns(3, gap="small")
                 with col1:
-                    st.link_button("阅读原文", paper['pdf_url'], use_container_width=True)
+                    pdf_url = paper.get('pdf_url', '')
+                    if pdf_url and isinstance(pdf_url, str) and pdf_url.strip():
+                        st.link_button("阅读原文", pdf_url, use_container_width=True)
+                    else:
+                        st.button("阅读原文（暂无链接）", disabled=True, use_container_width=True)
                 with col2:
                     if st.button("AI总结", key=f"summarize_{paper['entry_id']}", use_container_width=True):
                         with st.spinner("AI正在阅读摘要，请稍候..."):
@@ -608,6 +742,354 @@ elif st.session_state.page == "文献检索":
     # 只有在按钮被点击后，search_results才会被定义，所以需要检查
     elif st.session_state.get('search_results') is not None and not st.session_state.get('search_results'):
         st.warning("在选定时间范围内，未找到与您关键词相关的新论文。")
+
+elif st.session_state.page == "文献订阅":
+    # 页面头部卡片
+    st.markdown("""
+    <div style='background: linear-gradient(135deg, #8e44ad 0%, #9b59b6 100%); 
+                padding: 20px; border-radius: 10px; margin-bottom: 20px;'>
+        <h2 style='color: white; margin: 0;'>🔔 文献订阅管理</h2>
+        <p style='color: rgba(255,255,255,0.9); margin: 5px 0 0 0;'>订阅感兴趣的研究领域，系统将定时推送最新论文更新。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 获取订阅管理器
+    sub_manager = get_subscription_manager()
+    
+    # 初始化 active_tab
+    if 'active_subscription_tab' not in st.session_state:
+        st.session_state.active_subscription_tab = 0
+    
+    # 如果从侧边栏跳转过来，显示未读更新页面
+    if st.session_state.active_subscription_tab == 2:
+        # 设置标志，但不立即重置，避免按钮点击后跳转
+        show_unread_first = True
+    else:
+        show_unread_first = False
+    
+    # 如果需要先显示未读更新
+    if show_unread_first:
+        st.subheader("🔔 未读文献更新")
+        st.info("💬 以下是您所有订阅的最近更新")
+        
+        all_subscriptions = sub_manager.get_subscriptions(enabled_only=True)
+        total_unread = 0
+        
+        for sub in all_subscriptions:
+            history = sub_manager.get_update_history(sub['id'], limit=1)
+            if history and history[-1]['paper_count'] > 0:
+                latest_check = history[-1]
+                papers = latest_check['papers']
+                total_unread += len(papers)
+                
+                with st.expander(f"📝 **{sub['name']}** - {len(papers)} 篇新论文", expanded=True):
+                    st.caption(f"📅 检查时间：{latest_check['check_time'][:16]}")
+                    
+                    for i, paper in enumerate(papers):
+                        with st.container(border=True):
+                            st.markdown(f"**{i+1}. {paper['title']}**")
+                            st.caption(f"📅 {paper['published']} | ✍️ {paper['authors'][:100]}...")
+                            st.markdown(f"{paper['summary'][:200]}...")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                pdf_url = paper.get('pdf_url', '')
+                                if pdf_url and isinstance(pdf_url, str) and pdf_url.strip():
+                                    st.link_button("📝 阅读原文", pdf_url, use_container_width=True)
+                            with col2:
+                                # 为未读更新的 AI 总结按钮使用独立的 key
+                                unread_key = f"unread_summary_{sub['id']}_{i}"
+                                if st.button("🤖 AI总结", key=unread_key, use_container_width=True):
+                                    with st.spinner("🤖 AI正在阅读摘要..."):
+                                        ai_summary = summarize_with_ai(paper['summary'])
+                                        # 保存到 session_state
+                                        if 'unread_ai_summaries' not in st.session_state:
+                                            st.session_state.unread_ai_summaries = {}
+                                        st.session_state.unread_ai_summaries[unread_key] = ai_summary
+                                        st.rerun()
+                            
+                            # 显示 AI 总结（如果存在）
+                            if 'unread_ai_summaries' in st.session_state:
+                                unread_key = f"unread_summary_{sub['id']}_{i}"
+                                if unread_key in st.session_state.unread_ai_summaries:
+                                    st.info(f"🤖 {st.session_state.unread_ai_summaries[unread_key]}")
+        
+        if total_unread == 0:
+            st.success("✅ 暂无未读更新！")
+        
+        st.markdown("---")
+        st.caption("👇 您可以在下方管理订阅或手动检查更新")
+    
+    # 创建标签页：订阅管理、添加订阅、检查更新
+    tab1, tab2, tab3 = st.tabs(["📝 我的订阅", "➕ 添加订阅", "🔍 检查更新"])
+    
+    with tab1:
+        st.subheader("📚 订阅列表")
+        
+        subscriptions = sub_manager.get_subscriptions()
+        
+        if not subscriptions:
+            st.info("💭 您还没有任何订阅。请到'添加订阅'标签页创建您的第一个订阅！")
+        else:
+            # 统计信息
+            stats = sub_manager.get_statistics()
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("总订阅数", stats["total_subscriptions"])
+            with col2:
+                st.metric("启用中", stats["enabled_subscriptions"])
+            with col3:
+                st.metric("已发现论文", stats["total_papers_found"])
+            
+            st.markdown("---")
+            
+            # 显示每个订阅
+            for sub in subscriptions:
+                with st.expander(f"{'✅' if sub.get('enabled') else '❌'} **{sub['name']}**", expanded=True):
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.markdown(f"**关键词:** {', '.join(sub['keywords'])}")
+                        st.caption(f"📅 创建于: {sub['created_at'][:10]}")
+                        if sub.get('last_checked'):
+                            st.caption(f"🔍 最后检查: {sub['last_checked'][:16]}")
+                            st.caption(f"📧 通知数: {sub.get('notification_count', 0)} 篇")
+                        else:
+                            st.caption("🔍 最后检查: 从未检查")
+                    
+                    with col2:
+                        # 启用/禁用切换
+                        is_enabled = st.checkbox(
+                            "启用",
+                            value=sub.get('enabled', True),
+                            key=f"enable_{sub['id']}"
+                        )
+                        if is_enabled != sub.get('enabled', True):
+                            sub_manager.update_subscription(sub['id'], enabled=is_enabled)
+                            st.rerun()
+                        
+                        # 删除按钮
+                        if st.button("🗑️ 删除", key=f"delete_{sub['id']}", type="secondary", use_container_width=True):
+                            if sub_manager.remove_subscription(sub['id']):
+                                st.success(f"✅ 已删除订阅 '{sub['name']}'")
+                                st.rerun()
+                            else:
+                                st.error("❌ 删除失败")
+                    
+                    # 编辑功能
+                    with st.form(key=f"edit_form_{sub['id']}"):
+                        st.caption("✏️ 编辑订阅")
+                        new_name = st.text_input("订阅名称", value=sub['name'], key=f"name_{sub['id']}")
+                        new_keywords = st.text_input(
+                            "关键词（英文逗号分隔）",
+                            value=", ".join(sub['keywords']),
+                            key=f"keywords_{sub['id']}"
+                        )
+                        
+                        if st.form_submit_button("💾 保存修改", use_container_width=True):
+                            keywords_list = [k.strip() for k in new_keywords.split(',') if k.strip()]
+                            if new_name and keywords_list:
+                                if sub_manager.update_subscription(sub['id'], name=new_name, keywords=keywords_list):
+                                    st.success("✅ 更新成功！")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 更新失败")
+                            else:
+                                st.warning("⚠️ 请填写完整信息")
+    
+    with tab2:
+        st.subheader("➕ 创建新订阅")
+        
+        with st.form(key="add_subscription_form"):
+            st.markdown("🔖 填写以下信息创建您的文献订阅")
+            
+            sub_name = st.text_input(
+                "🏷️ 订阅名称",
+                placeholder="例如：钗钛矿稳定性研究",
+                help="给您的订阅起一个有意义的名字"
+            )
+            
+            sub_keywords = st.text_area(
+                "🔑 关键词（英文逗号分隔）",
+                placeholder="例如：perovskite stability, CsPbI3, long-term stability",
+                help="输入您想跟踪的研究关键词，多个关键词用英文逗号分隔",
+                height=100
+            )
+            
+            enabled = st.checkbox("✅ 立即启用该订阅", value=True)
+            
+            st.info("💡 提示：系统将每天24小时自动检查订阅更新，您也可以随时在'检查更新'标签页手动检查。")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                submit_button = st.form_submit_button("🎉 创建订阅", use_container_width=True, type="primary")
+            with col2:
+                if st.form_submit_button("🔄 清空", use_container_width=True):
+                    st.rerun()
+            
+            if submit_button:
+                if sub_name and sub_keywords:
+                    keywords_list = [k.strip() for k in sub_keywords.split(',') if k.strip()]
+                    if keywords_list:
+                        if sub_manager.add_subscription(sub_name, keywords_list, enabled):
+                            st.success(f"✅ 订阅 '{sub_name}' 创建成功！")
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error("❌ 创建失败，请稍后重试")
+                    else:
+                        st.warning("⚠️ 请至少输入一个关键词")
+                else:
+                    st.warning("⚠️ 请填写完整信息")
+    
+    with tab3:
+        st.subheader("🔍 检查订阅更新")
+        
+        # 初始化 session_state
+        if 'subscription_papers' not in st.session_state:
+            st.session_state.subscription_papers = None
+        if 'subscription_error' not in st.session_state:
+            st.session_state.subscription_error = None
+        if 'subscription_ai_summaries' not in st.session_state:
+            st.session_state.subscription_ai_summaries = {}
+        if 'auto_refresh_enabled' not in st.session_state:
+            st.session_state.auto_refresh_enabled = False
+        if 'refresh_interval' not in st.session_state:
+            st.session_state.refresh_interval = 300  # 默认 5 分钟
+        
+        subscriptions = sub_manager.get_subscriptions(enabled_only=True)
+        
+        if not subscriptions:
+            st.info("💭 您没有启用的订阅。")
+        else:
+            # 自动刷新配置
+            with st.expander("⚙️ 自动刷新设置", expanded=False):
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    auto_refresh = st.toggle(
+                        "🔄 启用自动刷新",
+                        value=st.session_state.auto_refresh_enabled,
+                        help="开启后，页面将按设定的间隔自动检查更新"
+                    )
+                    if auto_refresh != st.session_state.auto_refresh_enabled:
+                        st.session_state.auto_refresh_enabled = auto_refresh
+                        st.rerun()
+                
+                with col2:
+                    interval_options = {
+                        "每 5 分钟": 300,
+                        "每 15 分钟": 900,
+                        "每 30 分钟": 1800,
+                        "每 1 小时": 3600,
+                    }
+                    selected_interval = st.selectbox(
+                        "刷新间隔",
+                        options=list(interval_options.keys()),
+                        index=0,
+                        disabled=not auto_refresh
+                    )
+                    st.session_state.refresh_interval = interval_options[selected_interval]
+                
+                if auto_refresh:
+                    st.info(f"✅ 自动刷新已启用，间隔：{selected_interval}")
+                    # 使用 time.sleep 实现自动刷新
+                    import time
+                    time.sleep(st.session_state.refresh_interval)
+                    st.rerun()
+            
+            st.markdown("---")
+            # 选择要检查的订阅
+            sub_options = {f"{sub['name']} ({', '.join(sub['keywords'][:2])}...)": sub['id'] for sub in subscriptions}
+            selected_sub_name = st.selectbox(
+                "🎯 选择要检查的订阅",
+                options=list(sub_options.keys())
+            )
+            selected_sub_id = sub_options[selected_sub_name]
+            
+            # 时间范围选择
+            days_back = st.slider(
+                "📅 检查过去几天的论文",
+                min_value=1,
+                max_value=7,
+                value=1,
+                help="选择要检查的时间范围"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔎 开始检查", use_container_width=True, type="primary"):
+                    # 清空之前的结果和 AI 总结
+                    st.session_state.subscription_ai_summaries = {}
+                    with st.spinner(f"🔍 正在检查过去 {days_back} 天的新论文...\n请耐心等待，检索可能需要一些时间。"):
+                        papers, error = sub_manager.check_for_updates(selected_sub_id, days_back)
+                        
+                        # 保存到 session_state
+                        st.session_state.subscription_papers = papers
+                        st.session_state.subscription_error = error
+                        st.session_state.subscription_info = {
+                            'sub_id': selected_sub_id,
+                            'days_back': days_back
+                        }
+            
+            with col2:
+                if st.button("📄 查看历史记录", use_container_width=True):
+                    history = sub_manager.get_update_history(selected_sub_id, limit=5)
+                    if history:
+                        st.subheader("📜 检查历史（最近 5 次）")
+                        for record in reversed(history):
+                            with st.expander(f"📅 {record['check_time'][:16]} - {record['paper_count']} 篇"):
+                                for paper in record['papers'][:3]:
+                                    st.markdown(f"- {paper['title'][:60]}...")
+                                if len(record['papers']) > 3:
+                                    st.caption(f"... 还有 {len(record['papers']) - 3} 篇")
+                    else:
+                        st.info("暂无历史记录")
+            
+            # 显示检索结果（从 session_state 中读取）
+            if st.session_state.subscription_error:
+                st.error(f"❌ {st.session_state.subscription_error}")
+            elif st.session_state.subscription_papers is not None:
+                papers = st.session_state.subscription_papers
+                if papers:
+                    subscription = sub_manager.get_subscription(st.session_state.subscription_info['sub_id'])
+                    days_back = st.session_state.subscription_info['days_back']
+                    
+                    st.success(f"✅ 发现 {len(papers)} 篇新论文！")
+                    
+                    # 显示通知消息
+                    notification = format_notification(subscription, papers)
+                    st.info(notification)
+                    
+                    st.markdown("---")
+                    st.subheader("📚 论文详情")
+                    
+                    # 显示所有论文
+                    for i, paper in enumerate(papers, 1):
+                        with st.expander(f"**{i}. {paper['title']}**", expanded=(i <= 3)):
+                            st.markdown(f"**发表日期:** {paper['published']} | **作者:** {paper['authors']}")
+                            st.markdown(f"**匹配关键词:** {paper.get('keyword', 'N/A')}")
+                            st.markdown(f"**摘要:** {paper['summary'][:300]}...")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                pdf_url = paper.get('pdf_url', '')
+                                if pdf_url and isinstance(pdf_url, str) and pdf_url.strip():
+                                    st.link_button("📝 阅读原文", pdf_url, use_container_width=True)
+                                else:
+                                    st.button("📝 阅读原文（暂无链接）", disabled=True, use_container_width=True)
+                            with col2:
+                                if st.button("🤖 AI总结", key=f"sub_summary_{paper['entry_id']}", use_container_width=True):
+                                    with st.spinner("AI正在阅读摘要，请稍候..."):
+                                        ai_summary = summarize_with_ai(paper['summary'])
+                                        st.session_state.subscription_ai_summaries[paper['entry_id']] = ai_summary
+                                        st.rerun()
+                            
+                            # 显示 AI 总结（如果存在）
+                            if paper['entry_id'] in st.session_state.subscription_ai_summaries:
+                                st.info(f"🤖 {st.session_state.subscription_ai_summaries[paper['entry_id']]}")
+                elif st.session_state.subscription_info:
+                    days_back = st.session_state.subscription_info['days_back']
+                    st.warning(f"🔍 在过去 {days_back} 天内未发现新论文。")
 
 elif st.session_state.page == "XRD分析":
     # 页面头部卡片 - 改为沉稳的深蓝色

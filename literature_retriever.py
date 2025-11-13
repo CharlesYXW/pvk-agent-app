@@ -1,12 +1,47 @@
 import os
 import arxiv
 import datetime
+import time
 
 # --- 配置区 ---
 KEYWORDS = ["perovskite stability", "CsPbI3"]
 MAX_RESULTS_PER_KEYWORD = 5 # 每个关键词检索的最大数量
 OUTPUT_DIR = "research_briefings/"
+RETRY_ATTEMPTS = 3  # 重试次数
+RETRY_DELAY = 2     # 重试延迟（秒）
 # --- 结束配置 ---
+
+def search_arxiv_with_retry(query):
+    """
+    带重试机制的 arXiv 搜索函数。
+    """
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            print(f"正在搜索关键词: '{query}' (尝试 {attempt + 1}/{RETRY_ATTEMPTS})")
+            
+            # 配置 arxiv 的连接参数
+            search = arxiv.Search(
+                query=query,
+                max_results=MAX_RESULTS_PER_KEYWORD,
+                sort_by=arxiv.SortCriterion.LastUpdatedDate
+            )
+            
+            # 尝试获取结果
+            results = []
+            for result in search.results():
+                results.append(result)
+            
+            print(f"成功检索到 {len(results)} 篇论文")
+            return results
+            
+        except Exception as e:
+            print(f"检索失败: {str(e)}")
+            if attempt < RETRY_ATTEMPTS - 1:
+                print(f"等待 {RETRY_DELAY} 秒后重试...")
+                time.sleep(RETRY_DELAY)
+            else:
+                print(f"关键词 '{query}' 检索失败，已达最大重试次数")
+                return []
 
 def search_and_generate_briefing():
     """
@@ -16,17 +51,15 @@ def search_and_generate_briefing():
     unique_papers = {}
 
     for query in KEYWORDS:
-        print(f"正在搜索关键词: '{query}'")
-        search = arxiv.Search(
-            query=query,
-            max_results=MAX_RESULTS_PER_KEYWORD,
-            sort_by=arxiv.SortCriterion.LastUpdatedDate
-        )
-
-        for result in search.results():
+        results = search_arxiv_with_retry(query)
+        for result in results:
             # 通过论文ID去重
             if result.entry_id not in unique_papers:
                 unique_papers[result.entry_id] = result
+        
+        # 在两次搜索之间添加延迟，避免 API 限制
+        if query != KEYWORDS[-1]:
+            time.sleep(2)
 
     if not unique_papers:
         print("未发现新的相关论文。")
