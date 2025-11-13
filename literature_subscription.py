@@ -235,11 +235,16 @@ class SubscriptionManager:
         enabled_subs = len([s for s in self.subscriptions.values() if s.get("enabled", True)])
         total_papers = sum(len(h) for h in self.history.values())
         
+        # 获取最近检查时间，过滤掉空字符串
+        last_checks = [s.get("last_checked", "") for s in self.subscriptions.values()]
+        valid_checks = [check for check in last_checks if check]  # 过滤空字符串
+        last_check = max(valid_checks) if valid_checks else "从未检查"
+        
         return {
             "total_subscriptions": total_subs,
             "enabled_subscriptions": enabled_subs,
             "total_papers_found": total_papers,
-            "last_check": max([s.get("last_checked", "") for s in self.subscriptions.values()] or ["从未检查"])
+            "last_check": last_check
         }
     
     def get_unread_updates_count(self) -> int:
