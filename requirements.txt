@@ -25,3 +25,4 @@ sentence-transformers==5.1.1
 # Utilities
 python-dotenv==1.1.1
 lxml==6.0.1
+docling>=2.0.0

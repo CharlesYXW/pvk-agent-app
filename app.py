@@ -372,6 +372,7 @@ with st.sidebar:
     # 定义页面配置（图标 + 名称 + 描述）
     pages = [
         {"icon": "💬", "name": "知识库问答", "desc": "基于内部文档的智能问答"},
+        {"icon": "📄", "name": "文档处理", "desc": "PDF/DOCX转Markdown"},
         {"icon": "📰", "name": "文献检索", "desc": "追踪最新科研动态"},
         {"icon": "🔔", "name": "文献订阅", "desc": "定时推送研究领域更新"},
         {"icon": "📈", "name": "XRD分析", "desc": "自动分析衭射图谱"},
@@ -646,6 +647,121 @@ if st.session_state.page == "知识库问答":
                         st.markdown(response)
                         # 将助手回复也添加到会话状态
                         st.session_state.messages.append({"role": "assistant", "content": response})
+
+elif st.session_state.page == "文档处理":
+    # 页面头部卡片
+    st.markdown("""
+    <div style='background: linear-gradient(135deg, #3498db 0%, #2980b9 100%); 
+                padding: 20px; border-radius: 10px; margin-bottom: 20px;'>
+        <h2 style='color: white; margin: 0;'>📄 智能文档处理</h2>
+        <p style='color: rgba(255,255,255,0.9); margin: 5px 0 0 0;'>上传 PDF 或 DOCX 文档，自动转换为 Markdown 格式，方便阅读和编辑。</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 初始化 session state
+    if 'converted_markdown' not in st.session_state:
+        st.session_state.converted_markdown = None
+    if 'doc_processing_error' not in st.session_state:
+        st.session_state.doc_processing_error = None
+    
+    with st.container(border=True):
+        st.markdown("📂 **上传文档**")
+        uploaded_file = st.file_uploader(
+            "支持 PDF、DOCX、PPTX、HTML 等格式",
+            type=["pdf", "docx", "pptx", "html", "htm"],
+            help="支持多种文档格式，自动识别文档结构和表格"
+        )
+        
+        if uploaded_file:
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.info(f"📄 文件名: {uploaded_file.name}")
+            with col2:
+                file_size = len(uploaded_file.getvalue()) / 1024
+                st.info(f"💾 文件大小: {file_size:.2f} KB")
+            
+            if st.button("🚀 开始转换", use_container_width=True, type="primary"):
+                try:
+                    with st.spinner("🤖 AI 正在处理文档，请稍候..."):
+                        # 导入 Docling
+                        from docling.document_converter import DocumentConverter
+                        import tempfile
+                        
+                        # 将上传的文件保存到临时文件
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_file:
+                            tmp_file.write(uploaded_file.getvalue())
+                            tmp_file_path = tmp_file.name
+                        
+                        # 初始化转换器
+                        converter = DocumentConverter()
+                        
+                        # 转换文档
+                        result = converter.convert(tmp_file_path)
+                        
+                        # 导出为 Markdown
+                        markdown_text = result.document.export_to_markdown()
+                        
+                        # 保存结果
+                        st.session_state.converted_markdown = markdown_text
+                        st.session_state.doc_processing_error = None
+                        
+                        # 清理临时文件
+                        import os
+                        os.unlink(tmp_file_path)
+                        
+                        st.success("✅ 文档转换成功！")
+                        st.balloons()
+                        
+                except Exception as e:
+                    st.session_state.doc_processing_error = str(e)
+                    st.session_state.converted_markdown = None
+                    st.error(f"❌ 转换失败: {e}")
+    
+    # 显示转换结果
+    if st.session_state.converted_markdown:
+        st.markdown("---")
+        st.markdown("📝 **转换结果**")
+        
+        # 提供下载按钮
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            st.download_button(
+                label="💾 下载 Markdown",
+                data=st.session_state.converted_markdown,
+                file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+        
+        # 显示 Markdown 预览
+        with st.expander("👁️ 查看 Markdown 源文件", expanded=False):
+            st.code(st.session_state.converted_markdown, language="markdown")
+        
+        # 显示渲染后的效果
+        st.markdown("🖌️ **渲染预览**")
+        with st.container(border=True):
+            st.markdown(st.session_state.converted_markdown)
+    
+    elif st.session_state.doc_processing_error:
+        st.error(f"❌ 错误: {st.session_state.doc_processing_error}")
+    
+    # 使用说明
+    with st.expander("💡 使用说明", expanded=False):
+        st.markdown("""
+        ### 功能特点
+        
+        ✅ **支持多种格式**: PDF、DOCX、PPTX、HTML 等  
+        ✅ **智能解析**: 自动识别文档结构、表格、图片  
+        ✅ **高质量输出**: 生成结构化的 Markdown 文本  
+        ✅ **即时预览**: 支持源文件和渲染预览  
+        
+        ### 使用场景
+        
+        - 📄 将 PDF 论文转换为可编辑的 Markdown
+        - 📊 提取文档中的表格数据
+        - 📝 将文档内容添加到知识库
+        - 🔍 快速阅读和摘要文档内容
+        """)
 
 elif st.session_state.page == "文献检索":
     # 页面头部卡片 - 改为沉稳的深绿色
