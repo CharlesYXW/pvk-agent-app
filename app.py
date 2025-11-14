@@ -666,81 +666,215 @@ elif st.session_state.page == "文档处理":
     
     with st.container(border=True):
         st.markdown("📂 **上传文档**")
+        
+        # 添加文件大小限制提示
+        st.info("📊 文件大小限制: 200MB，建议上传 50MB 以内的文档以获得最佳性能")
+        
+        # 使用更简单的文件上传，避免 label_visibility 问题
         uploaded_file = st.file_uploader(
-            "支持 PDF、DOCX、PPTX、HTML 等格式",
-            type=["pdf", "docx", "pptx", "html", "htm"],
-            help="支持多种文档格式，自动识别文档结构和表格"
+            "请选择文档（支持 PDF, DOCX, XLSX/XLS, PPTX, HTML, Markdown, CSV, 图片等）",
+            type=[
+                # Office 格式
+                "pdf", "docx", "xlsx", "xls", "pptx",
+                # 网页和文本格式
+                "html", "htm", "xhtml", "md", "markdown", "csv", "adoc", "asciidoc",
+                # 图片格式
+                "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp",
+                # 字幕格式
+                "vtt", "webvtt",
+                # XML 格式
+                "xml"
+            ],
+            key="doc_uploader"
         )
         
-        if uploaded_file:
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.info(f"📄 文件名: {uploaded_file.name}")
-            with col2:
-                file_size = len(uploaded_file.getvalue()) / 1024
-                st.info(f"💾 文件大小: {file_size:.2f} KB")
-            
-            if st.button("🚀 开始转换", use_container_width=True, type="primary"):
-                try:
-                    with st.spinner("🤖 AI 正在处理文档，请稍候..."):
+        # 添加调试信息
+        if uploaded_file is not None:
+            try:
+                file_size_kb = len(uploaded_file.getvalue()) / 1024
+                file_size_mb = file_size_kb / 1024
+                
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    st.info(f"📄 文件名: {uploaded_file.name}")
+                with col2:
+                    if file_size_mb > 1:
+                        st.info(f"💾 文件大小: {file_size_mb:.2f} MB")
+                    else:
+                        st.info(f"💾 文件大小: {file_size_kb:.2f} KB")
+                
+                # 检查文件大小
+                if file_size_mb > 50:
+                    st.warning("⚠️ 文件较大，处理可能需要较长时间，请耐心等待...")
+                
+                # 转换按钮
+                if st.button("🚀 开始转换", use_container_width=True, type="primary"):
+                    try:
+                        # 添加详细进度提示
+                        progress_text = st.empty()
+                        
+                        progress_text.info("📦 正在初始化 Docling...")
                         # 导入 Docling
                         from docling.document_converter import DocumentConverter
                         import tempfile
-                        
-                        # 将上传的文件保存到临时文件
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_file:
-                            tmp_file.write(uploaded_file.getvalue())
-                            tmp_file_path = tmp_file.name
-                        
-                        # 初始化转换器
-                        converter = DocumentConverter()
-                        
-                        # 转换文档
-                        result = converter.convert(tmp_file_path)
-                        
-                        # 导出为 Markdown
-                        markdown_text = result.document.export_to_markdown()
-                        
-                        # 保存结果
-                        st.session_state.converted_markdown = markdown_text
-                        st.session_state.doc_processing_error = None
-                        
-                        # 清理临时文件
                         import os
-                        os.unlink(tmp_file_path)
                         
-                        st.success("✅ 文档转换成功！")
-                        st.balloons()
+                        progress_text.info("💾 正在保存上传的文件...")
+                        # 获取文件内容
+                        file_bytes = uploaded_file.getvalue()
                         
-                except Exception as e:
-                    st.session_state.doc_processing_error = str(e)
-                    st.session_state.converted_markdown = None
-                    st.error(f"❌ 转换失败: {e}")
+                        # 创建临时文件，确保文件名安全
+                        file_extension = uploaded_file.name.split('.')[-1] if '.' in uploaded_file.name else 'pdf'
+                        
+                        # 特殊处理:如果是 .xls 文件,提示用户转换
+                        if file_extension.lower() == 'xls':
+                            st.session_state.doc_processing_error = "不支持旧版 Excel 格式 (.xls)"
+                            st.session_state.converted_markdown = None
+                            progress_text.empty()
+                            st.error("❌ 不支持旧版 Excel 格式 (.xls)")
+                            st.info("💡 请使用 Excel 打开文件并另存为 .xlsx 格式,然后重新上传")
+                        else:
+                            # 创建临时文件供 Docling 处理
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}", mode='wb') as tmp_file:
+                                tmp_file.write(file_bytes)
+                                tmp_file.flush()
+                                tmp_file_path = tmp_file.name
+                        
+                        try:
+                            progress_text.info("🤖 正在初始化 AI 转换器...\n⏳ 首次运行可能需要下载模型（约1-2分钟）")
+                            # 初始化转换器，配置支持所有格式和功能
+                            from docling.datamodel.base_models import InputFormat
+                            from docling.document_converter import DocumentConverter, PdfFormatOption
+                            from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
+                            
+                            # 创建支持所有功能的转换器
+                            pipeline_options = PdfPipelineOptions()
+                            
+                            # 基础功能
+                            pipeline_options.do_ocr = True  # 启用 OCR 支持图片识别
+                            pipeline_options.do_table_structure = True  # 表格结构识别
+                            
+                            # 表格识别高精度模式
+                            pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+                            
+                            # 高级功能：公式和代码识别
+                            pipeline_options.do_formula_enrichment = True  # 公式识别，转换为 LaTeX
+                            pipeline_options.do_code_enrichment = True  # 代码块识别
+                            
+                            # 图片处理
+                            pipeline_options.generate_picture_images = True  # 生成图片
+                            pipeline_options.images_scale = 2.0  # 图片分辨率 2x
+                            pipeline_options.do_picture_classification = True  # 图片分类（图表、流程图等）
+                            
+                            converter = DocumentConverter(
+                                allowed_formats=[
+                                    InputFormat.PDF,
+                                    InputFormat.DOCX,
+                                    InputFormat.XLSX,      # Excel
+                                    InputFormat.PPTX,
+                                    InputFormat.HTML,
+                                    InputFormat.IMAGE,     # 图片格式
+                                    InputFormat.ASCIIDOC,
+                                    InputFormat.MD,        # Markdown
+                                    InputFormat.CSV,
+                                    InputFormat.VTT,       # 字幕
+                                    InputFormat.XML_USPTO, # XML 格式
+                                    InputFormat.XML_JATS,
+                                ],
+                                format_options={
+                                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                                }
+                            )
+                            
+                            progress_text.info("📄 正在转换文档...\n⏳ 复杂文档可能需要较长时间，请耐心等待")
+                            # 转换文档
+                            result = converter.convert(tmp_file_path)
+                            
+                            progress_text.info("✍️ 正在生成 Markdown...")
+                            # 导出为 Markdown，图片以 base64 嵌入
+                            markdown_text = result.document.export_to_markdown(
+                                image_mode="embedded"  # 图片嵌入到 Markdown 中
+                            )
+                            
+                            # 保存结果
+                            st.session_state.converted_markdown = markdown_text
+                            st.session_state.doc_processing_error = None
+                            
+                            progress_text.empty()  # 清除进度提示
+                            st.success("✅ 文档转换成功！")
+                            st.balloons()
+                            
+                        finally:
+                            # 确保清理临时文件
+                            try:
+                                if os.path.exists(tmp_file_path):
+                                    os.unlink(tmp_file_path)
+                            except:
+                                pass  # 忽略清理错误
+                            
+                    except PermissionError as e:
+                        st.session_state.doc_processing_error = "文件访问权限错误"
+                        st.session_state.converted_markdown = None
+                        st.error("❌ 转换失败: 文件访问权限错误，请检查文件是否被其他程序占用")
+                    except MemoryError as e:
+                        st.session_state.doc_processing_error = "内存不足"
+                        st.session_state.converted_markdown = None
+                        st.error("❌ 转换失败: 内存不足，请尝试上传更小的文件")
+                    except Exception as e:
+                        error_msg = str(e)
+                        st.session_state.doc_processing_error = error_msg
+                        st.session_state.converted_markdown = None
+                        
+                        # 更友好的错误提示
+                        if "403" in error_msg or "Forbidden" in error_msg:
+                            st.error("❌ 转换失败: 文件上传被拒绝，可能是文件大小超限或文件类型不支持")
+                            st.info("💡 建议: 请尝试上传更小的文件（<10MB）或使用其他格式")
+                        elif "timeout" in error_msg.lower():
+                            st.error("❌ 转换失败: 处理超时，文件太大或太复杂")
+                            st.info("💡 建议: 请尝试简化文档或分段处理")
+                        else:
+                            st.error(f"❌ 转换失败: {error_msg}")
+                            st.info("💡 如果问题持续，请尝试：1) 使用更小的文件 2) 转换为 PDF 格式 3) 检查文档是否损坏")
+                
+            except Exception as e:
+                st.error(f"❌ 读取文件失败: {str(e)}")
     
     # 显示转换结果
     if st.session_state.converted_markdown:
         st.markdown("---")
         st.markdown("📝 **转换结果**")
         
-        # 提供下载按钮
-        col1, col2 = st.columns([3, 1])
+        # 计算文件大小
+        markdown_size = len(st.session_state.converted_markdown.encode('utf-8'))
+        size_mb = markdown_size / (1024 * 1024)
+        
+        # 显示文件信息和下载
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            st.metric("📊 文件大小", f"{size_mb:.2f} MB" if size_mb >= 1 else f"{markdown_size / 1024:.2f} KB")
         with col2:
+            char_count = len(st.session_state.converted_markdown)
+            st.metric("🔢 字符数", f"{char_count:,}")
+        with col3:
             st.download_button(
                 label="💾 下载 Markdown",
                 data=st.session_state.converted_markdown,
                 file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}.md",
                 mime="text/markdown",
-                use_container_width=True
+                use_container_width=True,
+                type="primary"
             )
         
-        # 显示 Markdown 预览
-        with st.expander("👁️ 查看 Markdown 源文件", expanded=False):
-            st.code(st.session_state.converted_markdown, language="markdown")
+        # 成功提示
+        st.success("✅ 文档转换成功！请点击上方按钮下载 Markdown 文件。")
         
-        # 显示渲染后的效果
-        st.markdown("🖌️ **渲染预览**")
-        with st.container(border=True):
-            st.markdown(st.session_state.converted_markdown)
+        # 使用建议
+        st.info("""
+        💡 **使用建议**：
+        - 下载后使用 **Typora**、**VS Code**、**Obsidian** 等 Markdown 编辑器打开
+        - 图片已以 base64 格式嵌入，无需额外图片文件
+        - 公式以 LaTeX 格式导出，在支持 LaTeX 的编辑器中可正常渲染
+        """)
     
     elif st.session_state.doc_processing_error:
         st.error(f"❌ 错误: {st.session_state.doc_processing_error}")
@@ -750,17 +884,43 @@ elif st.session_state.page == "文档处理":
         st.markdown("""
         ### 功能特点
         
-        ✅ **支持多种格式**: PDF、DOCX、PPTX、HTML 等  
-        ✅ **智能解析**: 自动识别文档结构、表格、图片  
+        ✅ **支持多种格式**:  
+        - 📄 **Office 文档**: PDF, DOCX, XLSX, PPTX  
+        - 🌐 **网页格式**: HTML, XHTML  
+        - 📝 **文本格式**: Markdown (.md), AsciiDoc (.adoc), CSV  
+        - 🖼️ **图片格式**: PNG, JPEG, TIFF, BMP, WEBP  
+        - 🎥 **字幕格式**: WebVTT (.vtt)  
+        - 📊 **结构化格式**: XML (USPTO, JATS)  
+        
+        ✅ **高级 AI 功能**:
+        - 📷 **图片处理**: 自动识别图表、流程图、示意图，图片以 base64 嵌入到 Markdown
+        - 🧮 **公式识别**: 自动将数学公式转换为 LaTeX 格式（如 $E=mc^2$）
+        - 💻 **代码块识别**: 自动检测代码语言和格式化
+        - 📋 **表格精准识别**: 高精度表格结构解析
+        - 🔍 **OCR 文字识别**: 支持图片中的文字提取
+        
+        ✅ **智能解析**: 自动识别文档结构、表格、图片、公式  
         ✅ **高质量输出**: 生成结构化的 Markdown 文本  
         ✅ **即时预览**: 支持源文件和渲染预览  
         
         ### 使用场景
         
-        - 📄 将 PDF 论文转换为可编辑的 Markdown
-        - 📊 提取文档中的表格数据
+        - 📄 将 PDF 论文转换为可编辑的 Markdown，保留所有公式和图表
+        - 📊 提取 Excel 表格数据
+        - 🖼️ 识别图片中的文字（OCR）
+        - 🧮 提取数学公式和方程式
+        - 💻 提取代码示例并保留格式
         - 📝 将文档内容添加到知识库
         - 🔍 快速阅读和摘要文档内容
+        
+        ### 技术说明
+        
+        - 🤖 首次转换可能需要下载 AI 模型（约 1-2 分钟）
+        - ⚡ 后续转换速度会明显加快
+        - 💾 建议文件大小在 50MB 以内以获得最佳性能
+        - 🔧 启用了高级功能：OCR、公式识别、代码识别、图片分类、高精度表格识别
+        - 🖌️ 图片以 base64 编码嵌入 Markdown，单文件包含所有内容
+        - 📊 公式以 LaTeX 格式导出，可在支持 LaTeX 的编辑器中渲染
         """)
 
 elif st.session_state.page == "文献检索":
